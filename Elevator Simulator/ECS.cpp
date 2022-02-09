@@ -1,0 +1,216 @@
+#include "ECS.h"
+#include "Elevator.h"
+#include "Floor.h"
+#include "Passenger.h"
+
+
+
+ECS::ECS(int numElev, int numFloors, int minFloor, bool randomEvents)  {
+    m = (numElev >= 1) ? ((numElev <= MAX_ELEVATORS) ? numElev : MAX_ELEVATORS) : 1;
+    n = (numFloors >= 2) ? ((numFloors <= MAX_FLOORS) ? numFloors : MAX_FLOORS) : 2;
+    curElev = curFloor = 0;
+    this->minFloor = (minFloor < MAX_FLOOR) ? ((minFloor >= MIN_FLOOR) ? minFloor : MIN_FLOOR) : n-1;
+    this->minFloor = (this->minFloor + n > MAX_FLOORS) ? MAX_FLOORS - n : this->minFloor;
+
+    safeFloor = (this->minFloor >= 0) ? this->minFloor : ((this->minFloor + n - 1 >=0 ) ? 0 : this->minFloor + n - 1);
+
+    elevators = new QList<Elevator*>();
+    for(int i=0; i<m; ++i)  elevators->append(new Elevator(this,i,qMin(n-1,n/2)));
+    floors = new QList<Floor*>();
+    for(int i=0; i<n; ++i)  floors->append(new Floor(this,i));
+
+    floorRequests = new QSet<int>();
+    for(int i=0; i<n; ++i) if(!(floors->at(i)->isIdle()))   floorRequests->insert(i);
+    requestInterval = Elevator::elevMoveTime * 0.1;
+    requestTimer = new QTimer(this);
+    requestTimer->start(requestInterval);
+    connect(requestTimer,SIGNAL(timeout()),this,SLOT(makeDecision()));
+
+    generateRandomEvents = randomEvents;
+
+}
+void ECS::toggleRandomEvents() {generateRandomEvents = !generateRandomEvents;}
+bool ECS::hasRandomEvents() {return generateRandomEvents;}
+ECS::~ECS() {
+    for(int i=0; i<m; ++i)  {
+        delete elevators->at(i);
+    }
+    delete elevators;
+    for(int i=0; i<n; ++i)  {
+        delete floors->at(i);
+    }
+    delete floors;
+    delete floorRequests;
+    delete requestTimer;
+
+}
+
+bool ECS::setDimensions(int m, int n)    {
+    if( m < 1 || n < 2 || m > MAX_ELEVATORS || n > MAX_FLOORS) return false;
+    this->m = m;
+    this->n = n;
+    return true;
+}
+int ECS::getSafeFloor() {return safeFloor;}
+int ECS::getNumElevators() {return m;}
+int ECS::getMaxElevators() {return MAX_ELEVATORS;}
+int ECS::getNumFloors() {return n;}
+int ECS::getMaxFloors() {return MAX_FLOORS;}
+int ECS::getMinFloor() {return minFloor;}
+int ECS::getCurFloor() {return curFloor;}
+int ECS::getCurElevator() {return curElev;}
+QList<Elevator*> *ECS::getElevators()   {return elevators;}
+QList<Floor*> *ECS::getFloors()   {return floors;}
+QSet<int> *ECS::getFloorRequests()  {return floorRequests;}
+
+void ECS::setCurFloor(int floor) {curFloor = floor;}
+void ECS::setCurElevator(int elev) {curElev = elev;}
+void ECS::setSafeFloor(int sFloor)  {safeFloor = qMax(qMin(sFloor,n-1),0);}
+void ECS::makeRequest(int floorNum) {
+    if(floorNum <= 0 || floorNum > n) return;
+    floorRequests->insert(floorNum);
+}
+
+bool ECS::addPassenger(Passenger& p, int floorNum)    {
+    return elevators->at(floorNum)->addPassenger(p,floorNum);
+}
+
+bool ECS::movingToSafeFloor()   {
+    return elevators->at(0)->getSButtons()->value("fire") ||
+           elevators->at(0)->getSButtons()->value("powerOut");
+}
+void ECS::makeDecision()    {
+
+    // If all elevators are idle find floors with requests and pick closest elevator.
+    bool allIdle = true;
+    for(int i=0; i<m && allIdle; ++i) {
+        allIdle &= elevators->at(i)->isIdle();
+    }
+    if(allIdle) {
+        for(int i=0; i<n; ++i)  {if(!floors->at(i)->isIdle()) floorRequests->insert(i);}
+    }
+
+
+    // Move idle elevators.
+    int num = n*100;
+    Elevator* e;
+    int diff = num;
+    QSetIterator<int> iter(*floorRequests);
+        while(iter.hasNext())   {
+            int j = iter.next();
+            Elevator* ele = elevators->at(0);
+            for(int i=0; i<elevators->size(); ++i)  {
+                e = elevators->at(i);
+                int f = e->getCurFloor();
+                if(e->isIdle() && e->getStatus() != "waiting")     {
+                    if(qAbs(diff) > qAbs(f - j)) {
+                        num = j;
+                        diff = qAbs(f - j);
+                        ele = elevators->at(i);
+                    }
+                }
+            }
+
+            if(num < n) {
+                ele->toggleButton(QString::number(num),true);
+
+                if(num > e->getCurFloor()) e->setDirection(1);
+                else if(num < e->getCurFloor())    e->setDirection(-1);
+                else    e->setDirection(0);
+
+                floorRequests->remove(num);
+                break;
+            }
+        }
+}
+
+void ECS::toggleButton(int button, int num) {
+    toggleButton(QString::number(button),num);
+}
+
+void ECS::toggleButton(QString button, int num)  {
+
+    if(movingToSafeFloor()) return;
+
+    QString buttonLower = button.toLower();
+
+    // up/down means the message was meant for the floor buttons: toggle floor num buttons.
+    if(buttonLower=="up")  {
+        Floor* f = getFloors()->at(num);
+        f->setUpButtonState(true);
+        floorRequests->insert(num);
+        return;
+    }
+    if(buttonLower=="down")  {
+        Floor* f = getFloors()->at(num);
+        f->setDownButtonState(true);
+        floorRequests->insert(num);
+        return;
+    }
+
+    Elevator *e;
+    // Prepare for emergency movememnt to safe floor.
+    if(buttonLower=="fire" || button=="powerOut")  {
+        for(int i=0; i<m; ++i)  {
+            e = getElevators()->at(i);
+            e->clearButtons(button);
+            floorRequests->clear();
+        }
+       return;
+    }
+
+    //Otherwise request elevator go to floor num.
+    e = getElevators()->at(num);
+    e->toggleButton(button,true);
+}
+
+void ECS::newFloor(Elevator* e) {newFloor(e->getCurFloor(),e->getElevNumber());}
+void ECS::newFloor(int floorNum,int elevNum) {
+    if(floorNum < 0 || elevNum < 0 || floorNum >= n || elevNum >= m) return;
+    Floor *f = floors->at(floorNum);
+    Elevator *e = elevators->at(elevNum);
+    bool waitFloor = e->getNButtons()->at(floorNum);
+    e->toggleButton(QString::number(floorNum),false);
+    char dir = e->getDirection();
+
+    auto debugStr = [=]() {
+        qInfo() <<
+        "Elevator" << elevNum << " arrived at " << ((floorNum + minFloor >= 0)?"Floor":"Basement Floor") <<
+            qAbs(floorNum + minFloor) << ". Bell rings!";
+    }; // Debug string to print to console.
+
+    if(dir > 0 && (f->getUpButtonState() || waitFloor)) {
+
+        e->delayMoveTime(e->getElevMoveTime() * 10);
+        e->unloadPassengers(floorNum);
+        if(f->getUpButtonState())    e->loadPassengers(floorNum);
+        f->setUpButtonState(false);
+        if(!(f->getDownButtonState()))    floorRequests->remove(floorNum);
+        debugStr();
+        return;
+    }
+    if(dir < 0 && (f->getDownButtonState() || waitFloor)) {
+
+        e->delayMoveTime(e->getElevMoveTime() * 10);
+        e->unloadPassengers(floorNum);
+        if(f->getDownButtonState())    e->loadPassengers(floorNum);
+        f->setDownButtonState(false);
+        if(!(f->getUpButtonState()))    floorRequests->remove(floorNum);
+        debugStr();
+        return;
+    }
+    if((floorNum == n-1 || floorNum == 0 || dir == 0) && (f->getUpButtonState() || f->getDownButtonState() || waitFloor))    {
+
+        e->delayMoveTime(e->getElevMoveTime() * 10);
+        e->unloadPassengers(floorNum);
+        if(f->getUpButtonState() || f->getDownButtonState())   e->loadPassengers(floorNum);
+        f->setUpButtonState(false);
+        f->setDownButtonState(false);
+        floorRequests->remove(floorNum);
+        debugStr();
+        return;
+    }
+
+}
+
+
