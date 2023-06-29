@@ -1,5 +1,5 @@
 # Elevator-Simulator
- A simple elevator simulator
+ A simple elevator simulator.
 
 The Elevator Simulator folder files can be downloaded (as a zip and extracted) and then opened and run in QtCreator. 
 
