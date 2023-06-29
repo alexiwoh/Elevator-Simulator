@@ -8,6 +8,7 @@ For MacOS users, navigate to the "Elevator Simulator MacOS" folder and type "./A
 
 ![image](https://github.com/alexiwoh/Elevator-Simulator/assets/71348624/5b876d44-1e73-4c21-8286-d68a0309b2d9)
 
+
     Upon running you will see a text-based grid on the top left, a set of
 buttons and input boxes on the bottom and a set of "floor" and "elevator"
 buttons on the right. The grid represents the floor of an elevator versus
